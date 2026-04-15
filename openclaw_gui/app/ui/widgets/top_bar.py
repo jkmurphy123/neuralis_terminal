@@ -37,5 +37,6 @@ class TopBar(QWidget):
         ):
             layout.addWidget(QPushButton(label))
         layout.addStretch(1)
-        layout.addWidget(QLabel("Gateway: Placeholder"))
+        self.gateway_label = QLabel(f"Gateway: {controller.gateway_status_summary()}")
+        layout.addWidget(self.gateway_label)
         layout.addWidget(QLabel("Session: Idle"))

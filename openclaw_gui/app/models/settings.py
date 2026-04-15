@@ -18,6 +18,7 @@ class AppSettings:
 
     gateway_url: str = "http://127.0.0.1:18789"
     gateway_token: str = ""
+    gateway_timeout_seconds: float = 5.0
     data_root: str = default_data_root()
     default_personality_id: str | None = None
     autosave_seconds: int = 30
@@ -29,6 +30,9 @@ class AppSettings:
         return cls(
             gateway_url=str(data.get("gateway_url", defaults.gateway_url)),
             gateway_token=str(data.get("gateway_token", defaults.gateway_token)),
+            gateway_timeout_seconds=float(
+                data.get("gateway_timeout_seconds", defaults.gateway_timeout_seconds)
+            ),
             data_root=str(data.get("data_root", default_data_root())),
             default_personality_id=(
                 str(data["default_personality_id"])

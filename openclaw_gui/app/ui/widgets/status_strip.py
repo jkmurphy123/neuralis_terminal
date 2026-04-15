@@ -17,5 +17,6 @@ class StatusStrip(QWidget):
         layout.addWidget(QLabel("Project: none"))
         layout.addWidget(QLabel("Personality: none"))
         layout.addWidget(QLabel("Session: none"))
+        layout.addWidget(QLabel(f"Gateway: {controller.settings.gateway_url}"))
         layout.addStretch(1)
         layout.addWidget(QLabel(f"Data root: {controller.settings.data_root}"))

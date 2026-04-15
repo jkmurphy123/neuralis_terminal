@@ -12,6 +12,7 @@ def test_settings_load_save_round_trip(tmp_path: Path) -> None:
     settings = AppSettings(
         gateway_url="http://localhost:9999",
         gateway_token="token-123",
+        gateway_timeout_seconds=12.0,
         data_root=str(tmp_path / "app-data"),
         default_personality_id="persona-1",
         autosave_seconds=45,

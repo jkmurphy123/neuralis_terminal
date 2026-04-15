@@ -8,6 +8,8 @@ from pathlib import Path
 from openclaw_gui.app.controllers.personality_controller import PersonalityController
 from openclaw_gui.app.controllers.project_controller import ProjectController
 from openclaw_gui.app.controllers.session_controller import SessionController
+from openclaw_gui.app.gateway.gateway_client import GatewayClient
+from openclaw_gui.app.gateway.gateway_models import GatewayStatus
 from openclaw_gui.app.models.settings import AppSettings, SettingsStore
 from openclaw_gui.app.persistence.db import Database
 from openclaw_gui.app.persistence.file_store import FileStore
@@ -28,6 +30,8 @@ class AppController:
     settings: AppSettings
     file_store: FileStore
     database: Database
+    gateway_client: GatewayClient
+    gateway_status: GatewayStatus | None
     project_controller: ProjectController
     personality_controller: PersonalityController
     session_controller: SessionController
@@ -50,6 +54,8 @@ class AppController:
             settings=settings,
             file_store=file_store,
             database=database,
+            gateway_client=GatewayClient.from_settings(settings),
+            gateway_status=None,
             project_controller=ProjectController(ProjectRepository(database)),
             personality_controller=PersonalityController(
                 PersonalityRepository(database),
@@ -72,6 +78,20 @@ class AppController:
 
     def save_settings(self, settings: AppSettings) -> None:
         """Persist updated settings and refresh in-memory state."""
+        self.gateway_client.close()
         self.settings = settings
         self.bootstrap_settings_store.save(settings)
         self.settings_store.save(settings)
+        self.gateway_client = GatewayClient.from_settings(settings)
+        self.gateway_status = None
+
+    def test_gateway_connection(self) -> GatewayStatus:
+        """Probe the configured gateway and cache the normalized status."""
+        self.gateway_status = self.gateway_client.get_status()
+        return self.gateway_status
+
+    def gateway_status_summary(self) -> str:
+        """Return a short human-readable gateway status string."""
+        if self.gateway_status is None:
+            return f"Configured: {self.settings.gateway_url}"
+        return self.gateway_status.detail
