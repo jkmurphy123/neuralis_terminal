@@ -7,7 +7,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLabel,
-    QMessageBox,
     QPushButton,
     QWidget,
 )
@@ -64,15 +63,13 @@ class TopBar(QWidget):
         layout.addWidget(self.test_connection_button)
         layout.addWidget(QPushButton("Settings"))
         layout.addStretch(1)
-        self.gateway_label = QLabel()
-        self._update_gateway_label(controller.gateway_status_summary())
-        layout.addWidget(self.gateway_label)
+        self.gateway_state_label = QLabel("Gateway: Idle")
+        layout.addWidget(self.gateway_state_label)
         layout.addWidget(QLabel("Session: Idle"))
 
-    def _update_gateway_label(self, summary: str) -> None:
-        text = f"Gateway: {summary}"
-        self.gateway_label.setText(text)
-        self.gateway_label.setToolTip(summary)
+    def _update_gateway_state(self, state: str, *, tooltip: str | None = None) -> None:
+        self.gateway_state_label.setText(f"Gateway: {state}")
+        self.gateway_state_label.setToolTip(tooltip or state)
 
     @Slot()
     def _start_gateway_connection_test(self) -> None:
@@ -80,7 +77,11 @@ class TopBar(QWidget):
             return
 
         self.test_connection_button.setEnabled(False)
-        self._update_gateway_label("Testing connection...")
+        self._update_gateway_state("Testing", tooltip="Testing gateway connection...")
+        self.controller.status_messages.publish_debug(
+            "Testing gateway connection.",
+            source="gateway",
+        )
 
         thread = QThread(self)
         worker = GatewayConnectionWorker(self.controller)
@@ -110,11 +111,12 @@ class TopBar(QWidget):
         self.test_connection_button.setEnabled(True)
         if error is not None:
             message = f"Gateway connection check failed: {error}"
-            self._update_gateway_label(message)
-            QMessageBox.warning(self, "Gateway Connection Failed", message)
+            self._update_gateway_state("Error", tooltip=message)
+            self.controller.status_messages.publish_error(message, source="gateway")
             return
 
         summary = self.controller.gateway_status_summary()
-        self._update_gateway_label(summary)
+        gateway_state = "Connected" if status is not None and status.connected else "Unavailable"
+        self._update_gateway_state(gateway_state, tooltip=summary)
         if status is not None:
-            QMessageBox.information(self, "Gateway Connection", summary)
+            self.controller.status_messages.publish_success(summary, source="gateway")

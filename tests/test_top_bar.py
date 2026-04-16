@@ -4,11 +4,13 @@ import time
 from dataclasses import dataclass
 
 from openclaw_gui.app.gateway.gateway_models import GatewayCapabilities, GatewayStatus
+from openclaw_gui.app.services.status_message_bus import StatusMessageBus
 from openclaw_gui.app.ui.widgets.top_bar import TopBar
 
 
 @dataclass
 class FakeController:
+    status_messages: StatusMessageBus
     gateway_status: GatewayStatus | None = None
     error: Exception | None = None
     calls: int = 0
@@ -42,37 +44,44 @@ def wait_for_button_enabled(qapp, bar: TopBar, timeout_seconds: float = 2.0) -> 
     qapp.processEvents()
 
 
-def test_top_bar_test_connection_success_updates_gateway_label(monkeypatch, qapp) -> None:
-    messages: list[tuple[str, str]] = []
-    monkeypatch.setattr(
-        "openclaw_gui.app.ui.widgets.top_bar.QMessageBox.information",
-        lambda parent, title, message: messages.append((title, message)),
-    )
-    controller = FakeController()
+def test_top_bar_test_connection_success_updates_gateway_label(qapp) -> None:
+    controller = FakeController(status_messages=StatusMessageBus())
     bar = TopBar(controller)
 
     bar.test_connection_button.click()
     wait_for_button_enabled(qapp, bar)
 
     assert controller.calls == 1
-    assert "HTTP health endpoint is live." in bar.gateway_label.text()
-    assert messages == [("Gateway Connection", "HTTP health endpoint is live.")]
+    assert bar.gateway_state_label.text() == "Gateway: Connected"
+    messages = controller.status_messages.messages
+    assert messages[-1].level.value == "success"
+    assert messages[-1].text == "HTTP health endpoint is live."
 
 
-def test_top_bar_test_connection_failure_shows_warning(monkeypatch, qapp) -> None:
-    warnings: list[tuple[str, str]] = []
-    monkeypatch.setattr(
-        "openclaw_gui.app.ui.widgets.top_bar.QMessageBox.warning",
-        lambda parent, title, message: warnings.append((title, message)),
+def test_top_bar_test_connection_failure_publishes_error(qapp) -> None:
+    controller = FakeController(
+        status_messages=StatusMessageBus(),
+        error=RuntimeError("connection refused"),
     )
-    controller = FakeController(error=RuntimeError("connection refused"))
     bar = TopBar(controller)
 
     bar.test_connection_button.click()
     wait_for_button_enabled(qapp, bar)
 
     assert controller.calls == 1
-    assert "Gateway connection check failed: connection refused" in bar.gateway_label.text()
-    assert warnings == [
-        ("Gateway Connection Failed", "Gateway connection check failed: connection refused")
-    ]
+    assert bar.gateway_state_label.text() == "Gateway: Error"
+    messages = controller.status_messages.messages
+    assert messages[-1].level.value == "error"
+    assert messages[-1].text == "Gateway connection check failed: connection refused"
+
+
+def test_top_bar_test_connection_publishes_debug_start_message(qapp) -> None:
+    controller = FakeController(status_messages=StatusMessageBus())
+    bar = TopBar(controller)
+
+    bar.test_connection_button.click()
+    wait_for_button_enabled(qapp, bar)
+
+    messages = controller.status_messages.messages
+    assert messages[0].level.value == "debug"
+    assert messages[0].text == "Testing gateway connection."

@@ -19,6 +19,7 @@ from openclaw_gui.app.persistence.repositories import (
     SessionEventRepository,
     SessionRepository,
 )
+from openclaw_gui.app.services.status_message_bus import StatusMessageBus
 
 
 @dataclass(slots=True)
@@ -32,6 +33,7 @@ class AppController:
     database: Database
     gateway_client: GatewayClient
     gateway_status: GatewayStatus | None
+    status_messages: StatusMessageBus
     project_controller: ProjectController
     personality_controller: PersonalityController
     session_controller: SessionController
@@ -61,6 +63,7 @@ class AppController:
             database=database,
             gateway_client=gateway_client,
             gateway_status=None,
+            status_messages=StatusMessageBus(),
             project_controller=ProjectController(project_repository),
             personality_controller=PersonalityController(
                 personality_repository,

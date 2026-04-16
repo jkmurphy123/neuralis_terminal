@@ -5,6 +5,7 @@ from .personality import Personality
 from .project import Project
 from .session import SessionRecord, SessionStatus
 from .settings import AppSettings
+from .status_message import StatusMessage, StatusMessageLevel
 
 __all__ = [
     "AppSettings",
@@ -14,4 +15,6 @@ __all__ = [
     "SessionEvent",
     "SessionRecord",
     "SessionStatus",
+    "StatusMessage",
+    "StatusMessageLevel",
 ]
