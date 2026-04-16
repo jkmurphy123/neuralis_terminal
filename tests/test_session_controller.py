@@ -163,6 +163,71 @@ def test_send_message_records_gateway_error_without_losing_user_message(database
     ]
 
 
+def test_send_message_prefers_assistant_message_text_over_gateway_ids(database, file_store) -> None:
+    project_id, personality_id = seed_project_and_personality(database, file_store.data_root)
+    controller = make_session_controller(
+        database,
+        file_store,
+        FakeGateway(
+            start_handle=GatewaySessionHandle("session-key-ids", "gateway-ref-ids"),
+            message_result=GatewayMessageResult(
+                session_key="session-key-ids",
+                run_id="8d377f6a-9b12-4d82-98ce-8c96b566ef7c",
+                raw_payload={
+                    "sessionKey": "session-key-ids",
+                    "runId": "8d377f6a-9b12-4d82-98ce-8c96b566ef7c",
+                    "state": "final",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "Resolved response text"}],
+                    },
+                },
+            ),
+        ),
+    )
+    session = controller.start_session(project_id=project_id, personality_id=personality_id).session
+
+    result = controller.send_message(session_id=session.id, text="Hello gateway")
+
+    assert result.assistant_event is not None
+    assert result.assistant_event.content == "Resolved response text"
+
+
+def test_send_message_updates_gateway_session_key_when_gateway_derives_one(
+    database,
+    file_store,
+) -> None:
+    project_id, personality_id = seed_project_and_personality(database, file_store.data_root)
+    controller = make_session_controller(
+        database,
+        file_store,
+        FakeGateway(
+            start_handle=GatewaySessionHandle("session-key-start", "gateway-ref-start"),
+            message_result=GatewayMessageResult(
+                session_key="agent:main:session-key-start",
+                run_id="run-derived",
+                raw_payload={
+                    "sessionKey": "agent:main:session-key-start",
+                    "state": "final",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "Derived key reply"}],
+                    },
+                },
+            ),
+        ),
+    )
+    session = controller.start_session(project_id=project_id, personality_id=personality_id).session
+
+    result = controller.send_message(session_id=session.id, text="Hello gateway")
+
+    metadata = json.loads(result.session.metadata_json or "{}")
+    assert metadata["gateway"]["session_key"] == "agent:main:session-key-start"
+    assert result.session.gateway_session_ref == "agent:main:session-key-start"
+    assert result.assistant_event is not None
+    assert result.assistant_event.content == "Derived key reply"
+
+
 def test_suspend_restore_and_restart_update_session_lifecycle(database, file_store) -> None:
     project_id, personality_id = seed_project_and_personality(database, file_store.data_root)
     controller = make_session_controller(

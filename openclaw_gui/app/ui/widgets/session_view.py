@@ -74,6 +74,7 @@ class SessionView(QWidget):
         self.set_context()
         self.set_events([])
         self.set_send_enabled(False)
+        self.set_send_pending(False)
 
     def set_context(
         self,
@@ -105,6 +106,9 @@ class SessionView(QWidget):
         self.composer.setEnabled(enabled)
         self.send_button.setEnabled(enabled)
         self.history_button.setEnabled(True)
+
+    def set_send_pending(self, pending: bool) -> None:
+        self.send_button.setText("Sending..." if pending else "Send")
 
     def clear_composer(self) -> None:
         self.composer.clear()

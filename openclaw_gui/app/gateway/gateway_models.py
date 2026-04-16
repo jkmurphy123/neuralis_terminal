@@ -57,7 +57,7 @@ class GatewayStatus:
 
 @dataclass(slots=True)
 class GatewaySessionHandle:
-    """Placeholder session handle retained for later milestones."""
+    """Normalized handle for a gateway-backed session."""
 
     session_key: str
     gateway_session_ref: str | None = None
@@ -65,7 +65,8 @@ class GatewaySessionHandle:
 
 @dataclass(slots=True)
 class GatewayMessageResult:
-    """Placeholder message result retained for later milestones."""
+    """Normalized gateway response for one chat turn."""
 
     session_key: str
+    run_id: str | None = None
     raw_payload: dict[str, object] = field(default_factory=dict)

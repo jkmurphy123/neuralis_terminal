@@ -5,11 +5,12 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from PySide6.QtCore import QTimer, QUrl
+from PySide6.QtCore import QObject, QThread, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QMainWindow, QMessageBox, QVBoxLayout, QWidget
 
 from openclaw_gui.app.controllers.app_controller import AppController
+from openclaw_gui.app.controllers.session_controller import SessionSendResult
 from openclaw_gui.app.models.personality import Personality
 from openclaw_gui.app.models.project import Project
 from openclaw_gui.app.models.session import SessionRecord, SessionStatus
@@ -22,6 +23,30 @@ from openclaw_gui.app.ui.widgets.session_view import SessionView
 from openclaw_gui.app.ui.widgets.status_messages_panel import StatusMessagesPanel
 from openclaw_gui.app.ui.widgets.status_strip import StatusStrip
 from openclaw_gui.app.ui.widgets.top_bar import TopBar
+
+
+class SendMessageWorker(QObject):
+    """Run one blocking send-message operation off the GUI thread."""
+
+    finished = Signal(object, object)
+
+    def __init__(self, controller: AppController, session_id: str, text: str) -> None:
+        super().__init__()
+        self.controller = controller
+        self.session_id = session_id
+        self.text = text
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            result = self.controller.session_controller.send_message(
+                session_id=self.session_id,
+                text=self.text,
+            )
+        except Exception as exc:  # pragma: no cover - defensive UI boundary
+            self.finished.emit(None, exc)
+            return
+        self.finished.emit(result, None)
 
 
 class MainWindow(QMainWindow):
@@ -38,6 +63,8 @@ class MainWindow(QMainWindow):
         self.active_session: SessionRecord | None = None
         self.projects: list[Project] = []
         self.personalities: list[Personality] = []
+        self._send_thread: QThread | None = None
+        self._send_worker: SendMessageWorker | None = None
 
         self.setWindowTitle("Neuralis Terminal")
         self.resize(1280, 860)
@@ -169,8 +196,11 @@ class MainWindow(QMainWindow):
         )
         self.session_view.set_events(events)
         self.session_view.set_send_enabled(
-            self.active_session is not None and self.active_session.status == SessionStatus.ACTIVE
+            self._send_thread is None
+            and self.active_session is not None
+            and self.active_session.status == SessionStatus.ACTIVE
         )
+        self.session_view.set_send_pending(self._send_thread is not None)
         self.status_strip.update_runtime_status(
             project_name=self.active_project.name if self.active_project is not None else None,
             personality_name=(
@@ -311,6 +341,9 @@ class MainWindow(QMainWindow):
     def _handle_send_message(self, text: str) -> None:
         if not text.strip():
             return
+        if self._send_thread is not None:
+            self._publish_warning("A message is already in flight.")
+            return
         if self.active_session is None:
             self._handle_new_session()
         if self.active_session is None:
@@ -318,17 +351,56 @@ class MainWindow(QMainWindow):
         if self.active_session.status != SessionStatus.ACTIVE:
             self._publish_warning("Restore or start a fresh session before sending messages.")
             return
-        try:
-            result = self.controller.session_controller.send_message(
-                session_id=self.active_session.id,
-                text=text,
-            )
-        except Exception as exc:
+        self.controller.status_messages.publish_debug(
+            "Sending message to gateway.",
+            source="session",
+        )
+        thread = QThread(self)
+        worker = SendMessageWorker(self.controller, self.active_session.id, text)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._handle_send_message_result)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_send_thread)
+
+        self._send_thread = thread
+        self._send_worker = worker
+        self._refresh_ui()
+        thread.start()
+
+    @Slot()
+    def _clear_send_thread(self) -> None:
+        self._send_thread = None
+        self._send_worker = None
+        self._refresh_ui()
+
+    @Slot(object, object)
+    def _handle_send_message_result(
+        self,
+        result: SessionSendResult | None,
+        error: Exception | None,
+    ) -> None:
+        if error is not None:
             self.logger.exception("Failed to send message")
-            self._publish_error(f"Failed to send message: {exc}")
+            self._publish_error(f"Failed to send message: {error}")
+            return
+        if result is None:
+            self._publish_error("Message send finished without a result.")
             return
         self.active_session = result.session
         self.session_view.clear_composer()
+        if result.assistant_event is not None:
+            self.controller.status_messages.publish_success(
+                "Gateway response received.",
+                source="session",
+            )
+        elif result.error_event is not None:
+            self.controller.status_messages.publish_error(
+                result.error_event.content,
+                source="session",
+            )
         self._refresh_ui()
 
     def _open_projects_dialog(self) -> None:

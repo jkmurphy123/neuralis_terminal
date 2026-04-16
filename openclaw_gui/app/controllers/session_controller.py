@@ -218,6 +218,8 @@ class SessionController:
                 error_event=error_event,
             )
 
+        current = self._sync_gateway_session_key(current, gateway_result)
+
         assistant_text = self._assistant_text_from_result(gateway_result)
         current, assistant_event = self.append_event(
             session=current,
@@ -231,6 +233,25 @@ class SessionController:
             assistant_event=assistant_event,
             gateway_result=gateway_result,
         )
+
+    def _sync_gateway_session_key(
+        self,
+        session: SessionRecord,
+        gateway_result: GatewayMessageResult,
+    ) -> SessionRecord:
+        if not gateway_result.session_key.strip():
+            return session
+        current_handle = self._gateway_handle_for_session(session)
+        if gateway_result.session_key == current_handle.session_key:
+            return session
+        metadata = self._session_metadata(session)
+        gateway_data = metadata.get("gateway")
+        if not isinstance(gateway_data, dict):
+            gateway_data = {}
+        gateway_data["session_key"] = gateway_result.session_key
+        metadata["gateway"] = gateway_data
+        updated = replace(session, gateway_session_ref=gateway_result.session_key)
+        return self._persist_session_state(updated, metadata)
 
     def suspend_session(
         self,
@@ -577,11 +598,19 @@ class SessionController:
             stripped = value.strip()
             return stripped or None
         if isinstance(value, dict):
+            content_type = value.get("type")
+            if content_type == "text":
+                text_value = value.get("text")
+                if isinstance(text_value, str) and text_value.strip():
+                    return text_value.strip()
             for key in ("content", "message", "text", "response", "reply"):
                 candidate = value.get(key)
-                if isinstance(candidate, str) and candidate.strip():
-                    return candidate.strip()
+                found = self._find_text(candidate)
+                if found:
+                    return found
             for candidate in value.values():
+                if not isinstance(candidate, (dict, list)):
+                    continue
                 found = self._find_text(candidate)
                 if found:
                     return found

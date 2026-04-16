@@ -10,7 +10,6 @@ from openclaw_gui.app.gateway.gateway_errors import (
     GatewayMalformedResponseError,
     GatewayServerError,
     GatewayTimeoutError,
-    GatewayUnsupportedOperationError,
 )
 from openclaw_gui.app.gateway.gateway_models import GatewaySessionHandle
 from openclaw_gui.app.models.settings import AppSettings
@@ -36,6 +35,42 @@ def rpc_bundle(*methods: str) -> str:
         "new WebSocket(this.opts.url)\n"
         f"{calls}\n"
     )
+
+
+class FakeRpcClient:
+    def __init__(self) -> None:
+        self.ensure_connected_calls = 0
+        self.ensure_session_calls: list[str] = []
+        self.send_chat_calls: list[tuple[str, str]] = []
+        self.closed = False
+        self.send_chat_result: dict[str, object] = {
+            "sessionKey": "ignored",
+            "runId": "run-1",
+            "state": "final",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "hello from gateway"}],
+            },
+        }
+
+    def close(self) -> None:
+        self.closed = True
+
+    def ensure_connected(self) -> dict[str, object]:
+        self.ensure_connected_calls += 1
+        return {"ok": True}
+
+    def ensure_session(self, session_key: str) -> dict[str, object]:
+        self.ensure_session_calls.append(session_key)
+        self.ensure_connected()
+        return {"messages": []}
+
+    def send_chat(self, session_key: str, text: str) -> dict[str, object]:
+        self.send_chat_calls.append((session_key, text))
+        self.ensure_connected()
+        payload = dict(self.send_chat_result)
+        payload.setdefault("sessionKey", session_key)
+        return payload
 
 
 def test_gateway_ping_success() -> None:
@@ -76,7 +111,8 @@ def test_gateway_get_status_happy_path_with_discovery() -> None:
     assert status.capabilities.health_endpoint is True
     assert status.capabilities.websocket_rpc is True
     assert status.capabilities.message_send_rpc is True
-    assert status.capabilities.adapter_can_send_message is False
+    assert status.capabilities.adapter_can_send_message is True
+    assert status.capabilities.adapter_can_start_session is True
     assert "chat.send" in status.capabilities.discovered_methods
 
 
@@ -112,6 +148,7 @@ def test_gateway_list_capabilities_falls_back_when_dashboard_missing() -> None:
     assert capabilities.health_endpoint is True
     assert capabilities.dashboard_bundle is False
     assert capabilities.websocket_rpc is False
+    assert capabilities.adapter_can_send_message is False
     assert capabilities.discovered_methods == ()
 
 
@@ -142,20 +179,82 @@ def test_gateway_connection_error_is_normalized() -> None:
         client.get_status()
 
 
-def test_gateway_session_and_message_operations_are_explicitly_unsupported() -> None:
-    client = GatewayClient("http://gateway.test", transport=make_transport(lambda request: httpx.Response(200, json={"ok": True})))
+def test_gateway_start_session_uses_rpc_client() -> None:
+    rpc_client = FakeRpcClient()
+    client = GatewayClient(
+        "http://gateway.test",
+        transport=make_transport(lambda request: httpx.Response(200, json={"ok": True})),
+        rpc_client=rpc_client,
+    )
 
-    with pytest.raises(GatewayUnsupportedOperationError):
-        client.start_session({"project_id": "p1"}, {"personality_id": "x"})
+    handle = client.start_session(
+        {"id": "project-1", "name": "Project 1"},
+        {"id": "persona-1", "name": "Helpful Persona"},
+    )
 
-    with pytest.raises(GatewayUnsupportedOperationError):
-        client.send_message(GatewaySessionHandle(session_key="s1"), "hello")
+    assert handle.gateway_session_ref == handle.session_key
+    assert handle.session_key.startswith("project-1-helpful-persona-")
+    assert rpc_client.ensure_session_calls == [handle.session_key]
 
-    with pytest.raises(GatewayUnsupportedOperationError):
-        client.restore_session({"session_key": "s1"})
 
-    with pytest.raises(GatewayUnsupportedOperationError):
-        client.end_session(GatewaySessionHandle(session_key="s1"))
+def test_gateway_send_message_uses_rpc_client_and_returns_payload() -> None:
+    rpc_client = FakeRpcClient()
+    rpc_client.send_chat_result["sessionKey"] = "agent:main:session-1"
+    client = GatewayClient(
+        "http://gateway.test",
+        transport=make_transport(lambda request: httpx.Response(200, json={"ok": True})),
+        rpc_client=rpc_client,
+    )
+
+    result = client.send_message(GatewaySessionHandle(session_key="session-1"), "hello")
+
+    assert rpc_client.send_chat_calls == [("session-1", "hello")]
+    assert result.session_key == "agent:main:session-1"
+    assert result.run_id == "run-1"
+    assert result.raw_payload["state"] == "final"
+
+
+def test_gateway_restore_session_prefers_saved_gateway_session_key() -> None:
+    rpc_client = FakeRpcClient()
+    client = GatewayClient(
+        "http://gateway.test",
+        transport=make_transport(lambda request: httpx.Response(200, json={"ok": True})),
+        rpc_client=rpc_client,
+    )
+
+    handle = client.restore_session(
+        {
+            "session_id": "local-session-1",
+            "metadata": {"gateway": {"session_key": "remote-session-7"}},
+        }
+    )
+
+    assert handle.session_key == "remote-session-7"
+    assert rpc_client.ensure_session_calls == ["remote-session-7"]
+
+
+def test_gateway_restore_session_rejects_missing_session_key() -> None:
+    client = GatewayClient(
+        "http://gateway.test",
+        transport=make_transport(lambda request: httpx.Response(200, json={"ok": True})),
+        rpc_client=FakeRpcClient(),
+    )
+
+    with pytest.raises(GatewayMalformedResponseError):
+        client.restore_session({})
+
+
+def test_gateway_end_session_closes_rpc_client() -> None:
+    rpc_client = FakeRpcClient()
+    client = GatewayClient(
+        "http://gateway.test",
+        transport=make_transport(lambda request: httpx.Response(200, json={"ok": True})),
+        rpc_client=rpc_client,
+    )
+
+    client.end_session(GatewaySessionHandle(session_key="session-1"))
+
+    assert rpc_client.closed is True
 
 
 def test_gateway_client_builds_from_settings() -> None:
@@ -165,7 +264,8 @@ def test_gateway_client_builds_from_settings() -> None:
         gateway_timeout_seconds=9.5,
     )
 
-    client = GatewayClient.from_settings(settings)
+    rpc_client = FakeRpcClient()
+    client = GatewayClient.from_settings(settings, rpc_client=rpc_client)
 
     assert client.gateway_url == "http://localhost:9999"
     assert client.gateway_token == "token-123"

@@ -16,6 +16,14 @@ This repository currently implements the foundation layer:
 
 Gateway communication and full session UI behavior are intentionally left for later milestones.
 
+# Setup
+
+/home/ubuntu/ai_projects/neuralis_terminal
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .[dev]
+
+
 ## Run
 
 ```bash
