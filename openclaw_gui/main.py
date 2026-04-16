@@ -6,6 +6,7 @@ import ctypes.util
 import logging
 import os
 import sys
+from pathlib import Path
 
 from PySide6.QtWidgets import QApplication
 
@@ -13,12 +14,37 @@ from openclaw_gui.app.controllers.app_controller import AppController
 from openclaw_gui.app.ui.main_window import MainWindow
 
 
-def configure_logging() -> None:
-    """Initialize a simple application logger."""
+def configure_logging(data_root: str | Path | None = None) -> Path | None:
+    """Initialize console and file logging."""
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    log_path: Path | None = None
+    if data_root is not None:
+        root = Path(data_root)
+        root.mkdir(parents=True, exist_ok=True)
+        logs_dir = root / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        log_path = logs_dir / "app.log"
+        handlers.append(logging.FileHandler(log_path, encoding="utf-8"))
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        handlers=handlers,
+        force=True,
     )
+    return log_path
+
+
+def install_exception_logging() -> None:
+    """Capture uncaught exceptions in the application logger."""
+
+    def handle_exception(exc_type, exc_value, exc_traceback) -> None:
+        logging.getLogger(__name__).exception(
+            "Uncaught exception",
+            exc_info=(exc_type, exc_value, exc_traceback),
+        )
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+
+    sys.excepthook = handle_exception
 
 
 def has_xcb_cursor_library() -> bool:
@@ -80,11 +106,12 @@ def create_application() -> QApplication:
 
 
 def main() -> int:
-    """Launch the placeholder Milestone 1 desktop shell."""
-    configure_logging()
+    """Launch the desktop application."""
     app = create_application()
     controller = AppController.create_default()
     controller.initialize()
+    configure_logging(controller.file_store.data_root)
+    install_exception_logging()
 
     window = MainWindow(controller)
     window.show()

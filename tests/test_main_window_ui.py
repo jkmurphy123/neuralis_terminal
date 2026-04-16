@@ -107,3 +107,27 @@ def test_main_window_switches_project_and_starts_session(database, file_store, q
     assert window.active_session is not None
     assert window.status_strip.session_status_value.text() == "active"
     assert window.session_view.status_label.text() == "Status: active"
+
+
+def test_main_window_autosave_and_startup_restore(database, file_store, qapp) -> None:
+    controller = build_controller(database, file_store)
+    seed_project_and_personalities(controller)
+
+    window = MainWindow(controller)
+    qapp.processEvents()
+
+    window.top_bar.new_session_button.click()
+    qapp.processEvents()
+    assert window.active_session is not None
+
+    window.session_view.set_composer_text("Draft message")
+    saved_session_id = window.active_session.id
+    window._autosave_state()
+
+    restored_controller = build_controller(database, file_store)
+    restored_window = MainWindow(restored_controller)
+    qapp.processEvents()
+
+    assert restored_window.active_session is not None
+    assert restored_window.active_session.id == saved_session_id
+    assert restored_window.session_view.composer_text() == "Draft message"

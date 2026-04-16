@@ -34,6 +34,18 @@ class FileStore:
     def exports_root(self) -> Path:
         return self.data_root / "exports"
 
+    @property
+    def logs_root(self) -> Path:
+        return self.data_root / "logs"
+
+    @property
+    def log_path(self) -> Path:
+        return self.logs_root / "app.log"
+
+    @property
+    def ui_state_path(self) -> Path:
+        return self.data_root / "ui_state.json"
+
     def initialize(self) -> None:
         """Create the base directory tree."""
         for path in (
@@ -41,6 +53,7 @@ class FileStore:
             self.personalities_root,
             self.projects_root,
             self.exports_root,
+            self.logs_root,
         ):
             path.mkdir(parents=True, exist_ok=True)
 
@@ -172,3 +185,22 @@ class FileStore:
         path = self.exports_root / filename
         path.write_text(content, encoding="utf-8")
         return path
+
+    def write_ui_state(self, state: dict[str, object]) -> Path:
+        """Persist lightweight window/session restore state."""
+        self.initialize()
+        self.ui_state_path.write_text(
+            json.dumps(state, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        return self.ui_state_path
+
+    def read_ui_state(self) -> dict[str, object]:
+        """Load persisted window/session restore state."""
+        if not self.ui_state_path.exists():
+            return {}
+        try:
+            loaded = json.loads(self.ui_state_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return {}
+        return loaded if isinstance(loaded, dict) else {}

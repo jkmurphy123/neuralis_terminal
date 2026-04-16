@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
-from PySide6.QtCore import QUrl
+from PySide6.QtCore import QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QMainWindow, QMessageBox, QVBoxLayout, QWidget
 
@@ -12,6 +13,7 @@ from openclaw_gui.app.controllers.app_controller import AppController
 from openclaw_gui.app.models.personality import Personality
 from openclaw_gui.app.models.project import Project
 from openclaw_gui.app.models.session import SessionRecord, SessionStatus
+from openclaw_gui.app.services.restore_service import RestoreService
 from openclaw_gui.app.ui.dialogs.personality_manager_dialog import PersonalityManagerDialog
 from openclaw_gui.app.ui.dialogs.project_manager_dialog import ProjectManagerDialog
 from openclaw_gui.app.ui.dialogs.session_history_dialog import SessionHistoryDialog
@@ -25,9 +27,12 @@ from openclaw_gui.app.ui.widgets.top_bar import TopBar
 class MainWindow(QMainWindow):
     """Application shell coordinating the core UI widgets."""
 
+    logger = logging.getLogger(__name__)
+
     def __init__(self, controller: AppController) -> None:
         super().__init__()
         self.controller = controller
+        self.restore_service = RestoreService(controller.file_store)
         self.active_project: Project | None = None
         self.active_personality: Personality | None = None
         self.active_session: SessionRecord | None = None
@@ -52,7 +57,13 @@ class MainWindow(QMainWindow):
 
         self.setCentralWidget(central)
         self._connect_signals()
+        self._configure_autosave()
         self._load_initial_state()
+
+    def _configure_autosave(self) -> None:
+        self.autosave_timer = QTimer(self)
+        self.autosave_timer.timeout.connect(self._autosave_state)
+        self.autosave_timer.start(max(1, self.controller.settings.autosave_seconds) * 1000)
 
     def _connect_signals(self) -> None:
         self.top_bar.project_changed.connect(self._handle_project_changed)
@@ -72,16 +83,40 @@ class MainWindow(QMainWindow):
     def _load_initial_state(self) -> None:
         self.projects = self.controller.project_controller.list_projects()
         self.personalities = self.controller.personality_controller.list_personalities()
+        startup_state = self.restore_service.load_startup_state()
 
-        self.active_project = self.projects[0] if self.projects else None
-        self.active_personality = self._default_personality_for_project(self.active_project)
-        self.active_session = (
-            self.controller.session_controller.get_latest_restorable_session(self.active_project.id)
-            if self.active_project is not None
-            else None
+        self.active_project = (
+            self._project_by_id(startup_state.project_id) or (self.projects[0] if self.projects else None)
         )
+        self.active_personality = (
+            self._personality_by_id(startup_state.personality_id)
+            or self._default_personality_for_project(self.active_project)
+        )
+        self.active_session = None
+        if startup_state.session_id is not None:
+            saved_session = self.controller.session_controller.get_session(startup_state.session_id)
+            if saved_session is not None:
+                self.active_session = saved_session
+        if self.active_session is None:
+            self.active_session = (
+                self.controller.session_controller.get_latest_restorable_session(self.active_project.id)
+                if self.active_project is not None
+                else None
+            )
         if self.active_session is not None:
+            if self.active_session.status == SessionStatus.SUSPENDED:
+                try:
+                    self.active_session = self.controller.session_controller.restore_session(
+                        self.active_session.id
+                    )
+                except Exception as exc:
+                    self.logger.exception("Failed to restore startup session")
+                    self.controller.status_messages.publish_error(
+                        f"Failed to restore saved session on startup: {exc}",
+                        source="startup",
+                    )
             self.active_personality = self._personality_by_id(self.active_session.personality_id)
+        self.session_view.set_composer_text(startup_state.composer_draft)
         self._refresh_ui()
 
     def _refresh_ui(self) -> None:
@@ -152,6 +187,7 @@ class MainWindow(QMainWindow):
             message_count=len(events),
             gateway_endpoint=self.controller.settings.gateway_url,
         )
+        self._persist_ui_state()
 
     def _set_active_project(self, project_id: str | None) -> None:
         self.active_project = self._project_by_id(project_id)
@@ -179,6 +215,7 @@ class MainWindow(QMainWindow):
                 current_session_id=self.active_session.id if self.active_session is not None else None,
             )
         except Exception as exc:
+            self.logger.exception("Failed to switch project")
             self._publish_error(f"Failed to switch project: {exc}")
             self._refresh_ui()
             return
@@ -204,6 +241,7 @@ class MainWindow(QMainWindow):
                     personality_id=self.active_personality.id,
                 )
             except Exception as exc:
+                self.logger.exception("Failed to change personality")
                 self._publish_error(f"Failed to change personality: {exc}")
         self._refresh_ui()
 
@@ -217,6 +255,7 @@ class MainWindow(QMainWindow):
                 personality_id=self.active_personality.id,
             )
         except Exception as exc:
+            self.logger.exception("Failed to start session")
             self._publish_error(f"Failed to start session: {exc}")
             return
         self.active_session = result.session
@@ -231,6 +270,7 @@ class MainWindow(QMainWindow):
                 self.active_session.id
             )
         except Exception as exc:
+            self.logger.exception("Failed to suspend session")
             self._publish_error(f"Failed to suspend session: {exc}")
             return
         self._refresh_ui()
@@ -247,6 +287,7 @@ class MainWindow(QMainWindow):
         try:
             self.active_session = self.controller.session_controller.restore_session(target.id)
         except Exception as exc:
+            self.logger.exception("Failed to restore session")
             self._publish_error(f"Failed to restore session: {exc}")
             return
         self._refresh_ui()
@@ -261,6 +302,7 @@ class MainWindow(QMainWindow):
                 personality_id=self.active_personality.id if self.active_personality is not None else None,
             )
         except Exception as exc:
+            self.logger.exception("Failed to restart session")
             self._publish_error(f"Failed to restart session: {exc}")
             return
         self.active_session = result.session
@@ -282,6 +324,7 @@ class MainWindow(QMainWindow):
                 text=text,
             )
         except Exception as exc:
+            self.logger.exception("Failed to send message")
             self._publish_error(f"Failed to send message: {exc}")
             return
         self.active_session = result.session
@@ -307,6 +350,8 @@ class MainWindow(QMainWindow):
     def _open_settings_dialog(self) -> None:
         dialog = SettingsDialog(self.controller, self)
         if dialog.exec():
+            self.restore_service = RestoreService(self.controller.file_store)
+            self.autosave_timer.start(max(1, self.controller.settings.autosave_seconds) * 1000)
             self.projects = self.controller.project_controller.list_projects()
             self.personalities = self.controller.personality_controller.list_personalities()
             self.active_project = None
@@ -338,6 +383,7 @@ class MainWindow(QMainWindow):
                 else session
             )
         except Exception as exc:
+            self.logger.exception("Failed to open session history entry")
             self._publish_error(f"Failed to open session history entry: {exc}")
             return
         self.active_personality = self._personality_by_id(self.active_session.personality_id)
@@ -352,6 +398,21 @@ class MainWindow(QMainWindow):
             self._publish_error(f"Project path does not exist: {root}")
             return
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(root)))
+
+    def _autosave_state(self) -> None:
+        if self.active_session is not None:
+            try:
+                self.active_session = self.controller.session_controller.autosave_session(
+                    self.active_session.id,
+                    composer_draft=self.session_view.composer_text(),
+                )
+            except Exception as exc:
+                self.logger.exception("Autosave failed")
+                self.controller.status_messages.publish_error(
+                    f"Autosave failed: {exc}",
+                    source="autosave",
+                )
+        self._persist_ui_state()
 
     def _handle_gateway_test_completed(
         self,
@@ -368,6 +429,14 @@ class MainWindow(QMainWindow):
     def _publish_error(self, message: str) -> None:
         self.controller.status_messages.publish_error(message, source="ui")
         QMessageBox.critical(self, "Neuralis Terminal", message)
+
+    def _persist_ui_state(self) -> None:
+        self.restore_service.save_startup_state(
+            project_id=self.active_project.id if self.active_project is not None else None,
+            personality_id=self.active_personality.id if self.active_personality is not None else None,
+            session_id=self.active_session.id if self.active_session is not None else None,
+            composer_draft=self.session_view.composer_text(),
+        )
 
     def _project_by_id(self, project_id: str | None) -> Project | None:
         if project_id is None:
@@ -394,3 +463,7 @@ class MainWindow(QMainWindow):
         elif self.controller.settings.default_personality_id is not None:
             preferred_id = self.controller.settings.default_personality_id
         return self._personality_by_id(preferred_id) or self.personalities[0]
+
+    def closeEvent(self, event) -> None:  # type: ignore[override]
+        self._autosave_state()
+        super().closeEvent(event)

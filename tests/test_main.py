@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from openclaw_gui import main
 
 
@@ -35,3 +37,16 @@ def test_validate_runtime_environment_raises_for_missing_xcb_runtime(monkeypatch
         raise AssertionError("Expected SystemExit for missing xcb runtime dependency")
 
     assert "libxcb-cursor0" in message
+
+
+def test_configure_logging_creates_log_file(tmp_path) -> None:
+    log_path = main.configure_logging(tmp_path)
+
+    logger = logging.getLogger("test_logger")
+    logger.info("hello logging")
+    for handler in logging.getLogger().handlers:
+        handler.flush()
+
+    assert log_path is not None
+    assert log_path.exists()
+    assert "hello logging" in log_path.read_text(encoding="utf-8")

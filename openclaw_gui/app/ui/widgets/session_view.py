@@ -109,6 +109,9 @@ class SessionView(QWidget):
     def clear_composer(self) -> None:
         self.composer.clear()
 
+    def set_composer_text(self, text: str) -> None:
+        self.composer.setPlainText(text)
+
     def composer_text(self) -> str:
         return self.composer.toPlainText()
 

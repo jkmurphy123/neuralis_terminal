@@ -389,6 +389,18 @@ class SessionController:
         )
         return updated
 
+    def autosave_session(
+        self,
+        session_id: str,
+        *,
+        composer_draft: str = "",
+    ) -> SessionRecord:
+        current = self._require_session(session_id)
+        metadata = self._session_metadata(current)
+        metadata["composer_draft"] = composer_draft
+        metadata["autosaved"] = True
+        return self._persist_session_state(current, metadata)
+
     def switch_project(
         self,
         *,
