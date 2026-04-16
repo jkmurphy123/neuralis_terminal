@@ -14,6 +14,7 @@ from openclaw_gui.app.models.project import Project
 from openclaw_gui.app.models.session import SessionRecord, SessionStatus
 from openclaw_gui.app.ui.dialogs.personality_manager_dialog import PersonalityManagerDialog
 from openclaw_gui.app.ui.dialogs.project_manager_dialog import ProjectManagerDialog
+from openclaw_gui.app.ui.dialogs.session_history_dialog import SessionHistoryDialog
 from openclaw_gui.app.ui.dialogs.settings_dialog import SettingsDialog
 from openclaw_gui.app.ui.widgets.session_view import SessionView
 from openclaw_gui.app.ui.widgets.status_messages_panel import StatusMessagesPanel
@@ -66,6 +67,7 @@ class MainWindow(QMainWindow):
         self.top_bar.open_folder_requested.connect(self._open_active_project_folder)
         self.top_bar.gateway_test_completed.connect(self._handle_gateway_test_completed)
         self.session_view.send_requested.connect(self._handle_send_message)
+        self.session_view.history_requested.connect(self._open_session_history_dialog)
 
     def _load_initial_state(self) -> None:
         self.projects = self.controller.project_controller.list_projects()
@@ -287,14 +289,20 @@ class MainWindow(QMainWindow):
         self._refresh_ui()
 
     def _open_projects_dialog(self) -> None:
-        dialog = ProjectManagerDialog()
-        dialog.setParent(self)
+        dialog = ProjectManagerDialog(self.controller, self)
         dialog.exec()
+        self._load_initial_state()
+        self._refresh_ui()
 
     def _open_personalities_dialog(self) -> None:
-        dialog = PersonalityManagerDialog()
-        dialog.setParent(self)
+        dialog = PersonalityManagerDialog(self.controller, self)
         dialog.exec()
+        self.personalities = self.controller.personality_controller.list_personalities()
+        if self.active_personality is not None:
+            self.active_personality = self._personality_by_id(self.active_personality.id)
+        if self.active_session is not None:
+            self.active_personality = self._personality_by_id(self.active_session.personality_id)
+        self._refresh_ui()
 
     def _open_settings_dialog(self) -> None:
         dialog = SettingsDialog(self.controller, self)
@@ -306,6 +314,34 @@ class MainWindow(QMainWindow):
             self.active_session = None
             self._load_initial_state()
             self._refresh_ui()
+
+    def _open_session_history_dialog(self) -> None:
+        if self.active_project is None:
+            self._publish_warning("Select a project before browsing session history.")
+            return
+        dialog = SessionHistoryDialog(
+            self.controller,
+            project_id=self.active_project.id,
+            parent=self,
+        )
+        if not dialog.exec() or dialog.selected_session_id is None:
+            return
+
+        session = self.controller.session_controller.get_session(dialog.selected_session_id)
+        if session is None:
+            self._publish_error("Selected session no longer exists.")
+            return
+        try:
+            self.active_session = (
+                self.controller.session_controller.restore_session(session.id)
+                if dialog.restore_requested
+                else session
+            )
+        except Exception as exc:
+            self._publish_error(f"Failed to open session history entry: {exc}")
+            return
+        self.active_personality = self._personality_by_id(self.active_session.personality_id)
+        self._refresh_ui()
 
     def _open_active_project_folder(self) -> None:
         if self.active_project is None:

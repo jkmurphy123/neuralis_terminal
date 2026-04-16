@@ -27,6 +27,7 @@ class SessionView(QWidget):
     """Structured transcript view with banner, composer, and send action."""
 
     send_requested = Signal(str)
+    history_requested = Signal()
 
     def __init__(self, controller: AppController) -> None:
         super().__init__()
@@ -47,6 +48,9 @@ class SessionView(QWidget):
         banner_layout.addWidget(self.personality_label)
         banner_layout.addWidget(self.session_label)
         banner_layout.addStretch(1)
+        self.history_button = QPushButton("History...")
+        self.history_button.clicked.connect(self.history_requested)
+        banner_layout.addWidget(self.history_button)
         banner_layout.addWidget(self.status_label)
 
         self.transcript_list = QListWidget()
@@ -100,6 +104,7 @@ class SessionView(QWidget):
     def set_send_enabled(self, enabled: bool) -> None:
         self.composer.setEnabled(enabled)
         self.send_button.setEnabled(enabled)
+        self.history_button.setEnabled(True)
 
     def clear_composer(self) -> None:
         self.composer.clear()
