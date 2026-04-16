@@ -16,6 +16,8 @@ openclaw_gui/app/controllers/session_controller.py
 openclaw_gui/app/gateway/__init__.py
 openclaw_gui/app/gateway/gateway_adapter.py
 openclaw_gui/app/gateway/gateway_client.py
+openclaw_gui/app/gateway/gateway_discovery.py
+openclaw_gui/app/gateway/gateway_errors.py
 openclaw_gui/app/gateway/gateway_models.py
 openclaw_gui/app/models/__init__.py
 openclaw_gui/app/models/event.py
@@ -43,5 +45,8 @@ openclaw_gui/app/ui/widgets/session_view.py
 openclaw_gui/app/ui/widgets/status_strip.py
 openclaw_gui/app/ui/widgets/top_bar.py
 tests/test_file_store.py
+tests/test_gateway_client.py
+tests/test_main.py
 tests/test_repositories.py
+tests/test_session_controller.py
 tests/test_settings.py

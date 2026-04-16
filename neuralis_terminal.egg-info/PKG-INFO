@@ -36,6 +36,12 @@ python -m openclaw_gui.main
 If you are launching in a headless environment, the app will automatically fall back to Qt's `offscreen` platform.
 You can also force that mode explicitly with `NEURALIS_TERMINAL_HEADLESS=1 python -m openclaw_gui.main`.
 
+On Linux X11 desktops, Qt 6 also needs the system package `libxcb-cursor0`. If startup exits with an `xcb` platform plugin error, install it with:
+
+```bash
+sudo apt install libxcb-cursor0
+```
+
 ## Test
 
 ```bash

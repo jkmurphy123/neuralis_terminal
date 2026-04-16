@@ -48,23 +48,31 @@ class AppController:
             file_store = FileStore(Path(settings.data_root))
             settings_store = SettingsStore(file_store.settings_path)
         database = Database(file_store.database_path)
+        project_repository = ProjectRepository(database)
+        personality_repository = PersonalityRepository(database)
+        session_repository = SessionRepository(database)
+        event_repository = SessionEventRepository(database)
+        gateway_client = GatewayClient.from_settings(settings)
         return cls(
             bootstrap_settings_store=bootstrap_store,
             settings_store=settings_store,
             settings=settings,
             file_store=file_store,
             database=database,
-            gateway_client=GatewayClient.from_settings(settings),
+            gateway_client=gateway_client,
             gateway_status=None,
-            project_controller=ProjectController(ProjectRepository(database)),
+            project_controller=ProjectController(project_repository),
             personality_controller=PersonalityController(
-                PersonalityRepository(database),
+                personality_repository,
                 file_store,
             ),
             session_controller=SessionController(
-                SessionRepository(database),
-                SessionEventRepository(database),
+                session_repository,
+                event_repository,
                 file_store,
+                gateway_client,
+                project_repository,
+                personality_repository,
             ),
         )
 
@@ -83,6 +91,7 @@ class AppController:
         self.bootstrap_settings_store.save(settings)
         self.settings_store.save(settings)
         self.gateway_client = GatewayClient.from_settings(settings)
+        self.session_controller.gateway = self.gateway_client
         self.gateway_status = None
 
     def test_gateway_connection(self) -> GatewayStatus:

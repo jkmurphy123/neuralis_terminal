@@ -242,8 +242,13 @@ class SessionRepository(BaseRepository[SessionRecord]):
             ).fetchall()
         return [self._row_to_model(row) for row in rows]
 
-    def update(self, session: SessionRecord) -> SessionRecord:
-        updated = replace(session, last_activity_at=utc_now())
+    def update(
+        self,
+        session: SessionRecord,
+        *,
+        touch_last_activity: bool = True,
+    ) -> SessionRecord:
+        updated = replace(session, last_activity_at=utc_now()) if touch_last_activity else session
         with self.database.connect() as connection:
             connection.execute(
                 """
