@@ -360,6 +360,35 @@ class SessionController:
             note=restarted.note,
         )
 
+    def change_session_personality(
+        self,
+        *,
+        session_id: str,
+        personality_id: str,
+    ) -> SessionRecord:
+        current = self._require_session(session_id)
+        personality = self._require_personality(personality_id)
+        if current.personality_id == personality_id:
+            return current
+
+        updated = replace(current, personality_id=personality_id)
+        metadata = self._session_metadata(updated)
+        metadata["personality_id"] = personality.id
+        metadata["personality_name"] = personality.name
+        updated = self._persist_session_state(updated, metadata)
+        updated, _ = self.append_event(
+            session=updated,
+            event_type=EventType.PERSONALITY_CHANGE,
+            content=f"Personality changed to {personality.name}.",
+            metadata_json=json.dumps(
+                {
+                    "personality_id": personality.id,
+                    "personality_name": personality.name,
+                }
+            ),
+        )
+        return updated
+
     def switch_project(
         self,
         *,

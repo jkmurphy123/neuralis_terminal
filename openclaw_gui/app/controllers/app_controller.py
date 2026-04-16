@@ -49,12 +49,14 @@ class AppController:
             settings = settings_store.load()
             file_store = FileStore(Path(settings.data_root))
             settings_store = SettingsStore(file_store.settings_path)
+        gateway_client = GatewayClient.from_settings(settings)
+        file_store.initialize()
         database = Database(file_store.database_path)
+        database.initialize()
         project_repository = ProjectRepository(database)
         personality_repository = PersonalityRepository(database)
         session_repository = SessionRepository(database)
         event_repository = SessionEventRepository(database)
-        gateway_client = GatewayClient.from_settings(settings)
         return cls(
             bootstrap_settings_store=bootstrap_store,
             settings_store=settings_store,
@@ -92,10 +94,37 @@ class AppController:
         self.gateway_client.close()
         self.settings = settings
         self.bootstrap_settings_store.save(settings)
-        self.settings_store.save(settings)
         self.gateway_client = GatewayClient.from_settings(settings)
-        self.session_controller.gateway = self.gateway_client
+        self._rebuild_runtime_services()
+        self.settings_store.save(settings)
         self.gateway_status = None
+
+    def _rebuild_runtime_services(self) -> None:
+        """Rebuild filesystem, database, and controller services for current settings."""
+        self.file_store = FileStore(Path(self.settings.data_root))
+        self.file_store.initialize()
+        self.settings_store = SettingsStore(self.file_store.settings_path)
+        self.database = Database(self.file_store.database_path)
+        self.database.initialize()
+
+        project_repository = ProjectRepository(self.database)
+        personality_repository = PersonalityRepository(self.database)
+        session_repository = SessionRepository(self.database)
+        event_repository = SessionEventRepository(self.database)
+
+        self.project_controller = ProjectController(project_repository)
+        self.personality_controller = PersonalityController(
+            personality_repository,
+            self.file_store,
+        )
+        self.session_controller = SessionController(
+            session_repository,
+            event_repository,
+            self.file_store,
+            self.gateway_client,
+            project_repository,
+            personality_repository,
+        )
 
     def test_gateway_connection(self) -> GatewayStatus:
         """Probe the configured gateway and cache the normalized status."""
