@@ -194,6 +194,7 @@ class SessionController:
         current = self._require_session(session_id)
         if current.status != SessionStatus.ACTIVE:
             raise ValueError(f"Cannot send a message while session is {current.status.value}.")
+        current = self._ensure_project_context(current)
         current, user_event = self.append_event(
             session=current,
             event_type=EventType.USER,
@@ -221,6 +222,19 @@ class SessionController:
         current = self._sync_gateway_session_key(current, gateway_result)
 
         assistant_text = self._assistant_text_from_result(gateway_result)
+        if assistant_text is None:
+            current, error_event = self.append_event(
+                session=current,
+                event_type=EventType.ERROR,
+                content="Gateway response did not include assistant text.",
+                metadata_json=json.dumps({"source": "gateway", "operation": "send_message"}),
+            )
+            return SessionSendResult(
+                session=current,
+                user_event=user_event,
+                error_event=error_event,
+                gateway_result=gateway_result,
+            )
         current, assistant_event = self.append_event(
             session=current,
             event_type=EventType.ASSISTANT,
@@ -233,6 +247,35 @@ class SessionController:
             assistant_event=assistant_event,
             gateway_result=gateway_result,
         )
+
+    def _ensure_project_context(self, session: SessionRecord) -> SessionRecord:
+        project = self._require_project(session.project_id)
+        metadata = self._session_metadata(session)
+        handle = self._gateway_handle_for_session(session)
+        if (
+            metadata.get("project_context_synced_project_id") == project.id
+            and metadata.get("project_context_synced_root_path") == project.root_path
+            and metadata.get("project_context_synced_session_key") == handle.session_key
+        ):
+            return session
+
+        try:
+            gateway_result = self.gateway.send_message(
+                handle,
+                self._project_context_instruction(project),
+            )
+        except GatewayError as exc:
+            return session
+
+        updated = self._sync_gateway_session_key(session, gateway_result)
+        metadata = self._session_metadata(updated)
+        metadata["project_context_synced_project_id"] = project.id
+        metadata["project_context_synced_project_name"] = project.name
+        metadata["project_context_synced_root_path"] = project.root_path
+        metadata["project_context_synced_session_key"] = self._gateway_handle_for_session(
+            updated
+        ).session_key
+        return self._persist_session_state(updated, metadata)
 
     def _sync_gateway_session_key(
         self,
@@ -501,6 +544,21 @@ class SessionController:
             "storage_path": personality.storage_path,
         }
 
+    def _project_context_instruction(self, project: Project) -> str:
+        return "\n".join(
+            [
+                "Internal GUI context update.",
+                f"Selected project: {project.name}",
+                f"Project root: {project.root_path}",
+                "Treat that directory as the primary codebase and workspace for this session.",
+                (
+                    "When the user asks you to inspect, explain, or modify code, start from "
+                    "that project root unless the user explicitly says otherwise."
+                ),
+                "Do not answer the user. Reply with exactly NO_REPLY.",
+            ]
+        )
+
     def _base_metadata(
         self,
         session: SessionRecord,
@@ -585,13 +643,11 @@ class SessionController:
             gateway_session_ref=session.gateway_session_ref,
         )
 
-    def _assistant_text_from_result(self, result: GatewayMessageResult) -> str:
+    def _assistant_text_from_result(self, result: GatewayMessageResult) -> str | None:
         text = self._find_text(result.raw_payload)
         if text:
             return text
-        if result.raw_payload:
-            return json.dumps(result.raw_payload, indent=2, sort_keys=True)
-        return "Gateway response received."
+        return None
 
     def _find_text(self, value: object) -> str | None:
         if isinstance(value, str):

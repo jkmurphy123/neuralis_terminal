@@ -415,9 +415,9 @@ class OpenClawRpcClient:
             },
         )
         try:
-            return self.wait_for_chat_completion(session_key, run_id)
+            return self.wait_for_chat_completion(session_key, run_id, expected_user_text=text)
         except GatewayTimeoutError:
-            return self._chat_history_fallback(session_key, run_id, ack_payload)
+            return self._chat_history_fallback(session_key, run_id, text, ack_payload)
 
     def request(self, method: str, params: dict[str, object]) -> dict[str, object]:
         with self._lock:
@@ -461,7 +461,13 @@ class OpenClawRpcClient:
                     )
                 self._raise_rpc_error(method, message.get("error"))
 
-    def wait_for_chat_completion(self, session_key: str, run_id: str) -> dict[str, object]:
+    def wait_for_chat_completion(
+        self,
+        session_key: str,
+        run_id: str,
+        *,
+        expected_user_text: str | None = None,
+    ) -> dict[str, object]:
         with self._lock:
             deadline = time.monotonic() + max(self.timeout_seconds, 30.0)
             effective_session_key = session_key
@@ -485,7 +491,11 @@ class OpenClawRpcClient:
                 if event.event == "agent":
                     assistant_text = self._assistant_text_from_agent_payload(payload) or assistant_text
                     if self._agent_run_finished(payload):
-                        history_message = self._latest_assistant_message(effective_session_key)
+                        history_message = self._latest_assistant_message(
+                            effective_session_key,
+                            run_id=run_id,
+                            after_user_text=expected_user_text,
+                        )
                         if history_message is not None:
                             return {
                                 "sessionKey": effective_session_key,
@@ -517,19 +527,48 @@ class OpenClawRpcClient:
                         endpoint=self.gateway_url,
                     )
                 if state in {"final", "aborted"}:
-                    result = dict(payload)
-                    result["sessionKey"] = effective_session_key
-                    return result
+                    final_text = self._assistant_text_from_chat_payload(payload) or assistant_text
+                    if final_text:
+                        result = dict(payload)
+                        result["sessionKey"] = effective_session_key
+                        if not self._is_assistant_message(result.get("message")):
+                            result["message"] = {
+                                "role": "assistant",
+                                "content": [{"type": "text", "text": final_text}],
+                            }
+                        return result
+                    history_message = self._latest_assistant_message(
+                        effective_session_key,
+                        run_id=run_id,
+                        after_user_text=expected_user_text,
+                    )
+                    if history_message is not None:
+                        return {
+                            "sessionKey": effective_session_key,
+                            "runId": run_id,
+                            "state": "final-history-fallback",
+                            "message": history_message,
+                        }
+                    raise GatewayMalformedResponseError(
+                        "Gateway finished the chat turn without an assistant reply.",
+                        operation="chat.send",
+                        endpoint=self.gateway_url,
+                    )
 
     def _chat_history_fallback(
         self,
         session_key: str,
         run_id: str,
+        user_text: str,
         ack_payload: dict[str, object],
     ) -> dict[str, object]:
         for candidate_session_key in self._fallback_session_keys(session_key):
             history = self.request("chat.history", {"sessionKey": candidate_session_key, "limit": 20})
-            history_message = self._latest_assistant_message_from_history(history)
+            history_message = self._latest_assistant_message_from_history(
+                history,
+                run_id=run_id,
+                after_user_text=user_text,
+            )
             if history_message is not None:
                 return {
                     "sessionKey": candidate_session_key,
@@ -545,9 +584,19 @@ class OpenClawRpcClient:
             endpoint=self.gateway_url,
         )
 
-    def _latest_assistant_message(self, session_key: str) -> dict[str, object] | None:
+    def _latest_assistant_message(
+        self,
+        session_key: str,
+        *,
+        run_id: str | None = None,
+        after_user_text: str | None = None,
+    ) -> dict[str, object] | None:
         history = self.request("chat.history", {"sessionKey": session_key, "limit": 20})
-        return self._latest_assistant_message_from_history(history)
+        return self._latest_assistant_message_from_history(
+            history,
+            run_id=run_id,
+            after_user_text=after_user_text,
+        )
 
     def _perform_connect_handshake(self) -> dict[str, object]:
         request_id = str(uuid.uuid4())
@@ -741,12 +790,63 @@ class OpenClawRpcClient:
             return (session_key,)
         return (session_key, derived)
 
-    @staticmethod
-    def _latest_assistant_message_from_history(history: dict[str, object]) -> dict[str, object] | None:
-        for message in reversed(list(history.get("messages", []))):
-            if OpenClawRpcClient._is_assistant_message(message):
-                return dict(message)
+    @classmethod
+    def _latest_assistant_message_from_history(
+        cls,
+        history: dict[str, object],
+        *,
+        run_id: str | None = None,
+        after_user_text: str | None = None,
+    ) -> dict[str, object] | None:
+        messages = [message for message in history.get("messages", []) if isinstance(message, dict)]
+        if run_id:
+            for message in reversed(messages):
+                if cls._is_assistant_message(message) and cls._message_run_id(message) == run_id:
+                    return dict(message)
+
+        normalized_user_text = after_user_text.strip() if after_user_text else ""
+        if normalized_user_text:
+            for index in range(len(messages) - 1, -1, -1):
+                message = messages[index]
+                if not cls._is_user_message(message):
+                    continue
+                if cls._extract_message_text(message) != normalized_user_text:
+                    continue
+                for candidate in messages[index + 1 :]:
+                    if cls._is_user_message(candidate):
+                        return None
+                    if cls._is_assistant_message(candidate):
+                        return dict(candidate)
+                return None
         return None
+
+    @staticmethod
+    def _is_user_message(message: object) -> bool:
+        if not isinstance(message, dict):
+            return False
+        role = message.get("role")
+        return isinstance(role, str) and role.lower() == "user"
+
+    @classmethod
+    def _message_run_id(cls, message: dict[str, object]) -> str | None:
+        for value in cls._candidate_run_id_values(message):
+            if value:
+                return value
+        return None
+
+    @classmethod
+    def _candidate_run_id_values(cls, value: object) -> list[str]:
+        if isinstance(value, dict):
+            found: list[str] = []
+            direct = value.get("runId")
+            if isinstance(direct, str) and direct.strip():
+                found.append(direct.strip())
+            for key in ("metadata", "meta", "message", "data"):
+                nested = value.get(key)
+                if isinstance(nested, dict):
+                    found.extend(cls._candidate_run_id_values(nested))
+            return found
+        return []
 
     @staticmethod
     def _ws_url_from_gateway_url(gateway_url: str) -> str:
